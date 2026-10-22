@@ -1,0 +1,540 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>夜间查房 · NIGHT ROUND</title>
+<style>
+  :root{
+    --ink:#d8cfc4;
+    --dim:#7a6f66;
+    --red:#b3241f;
+    --teal:#4fd6c2;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000;}
+  body{
+    font-family:"Courier New",Consolas,monospace;
+    color:var(--ink);
+    cursor:default;
+    user-select:none;
+  }
+  #stage{
+    position:fixed;inset:0;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(ellipse at 50% 50%, #0a0a0c 0%, #000 70%);
+  }
+  /* 16:10 舞台：铺满视口并按比例信箱化（320x200 的原生比例） */
+  #wrap{
+    position:relative;line-height:0;
+    width:min(100vw, 160vh);
+    height:min(100vh, 62.5vw);
+  }
+  canvas{
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    display:block;
+    width:100%;height:100%;
+    background:#000;
+  }
+  /* 扫描线 + 噪点 覆盖层（不要用 mix-blend-mode：全屏混合模式每帧
+     都要走昂贵的合成路径，低端机上会明显掉帧） */
+  #grain{
+    position:absolute;inset:0;pointer-events:none;
+    opacity:.22;
+    background-image:repeating-linear-gradient(to bottom, rgba(255,255,255,.06) 0 1px, rgba(0,0,0,.12) 1px 3px);
+  }
+  #vig{
+    position:absolute;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 18vh 6vh rgba(0,0,0,.92);
+  }
+
+  /* ---------- UI ---------- */
+  .layer{position:absolute;inset:0;pointer-events:none;}
+  #hud{font-size:clamp(10px,1.5vh,15px);letter-spacing:.12em;}
+  #hud .top{
+    position:absolute;top:1.6vh;left:2vh;right:2vh;
+    display:flex;justify-content:space-between;align-items:flex-start;
+    text-shadow:0 0 6px #000, 0 0 2px #000;
+  }
+  .card{
+    border:1px solid rgba(216,207,196,.22);
+    background:rgba(0,0,0,.42);
+    padding:.5em .8em;
+  }
+  #objective{color:var(--dim);}
+  #objective b{color:var(--ink);font-weight:normal;}
+  #keys{color:var(--teal);}
+  #keys .off{color:#3a3630;}
+  #status{color:var(--red);opacity:0;}
+  #status.on{opacity:1;animation:blink .6s steps(2,end) infinite;}
+  @keyframes blink{50%{opacity:.25}}
+
+  #sub{
+    position:absolute;left:50%;bottom:8%;transform:translateX(-50%);
+    max-width:min(78vw,760px);text-align:center;
+    font-size:clamp(12px,2vh,20px);line-height:1.7;
+    color:#f0e7dc;
+    text-shadow:0 0 8px #000,0 0 3px #000, 0 2px 0 #000;
+    letter-spacing:.06em;
+    transition:opacity .35s;
+  }
+  #sub .who{color:var(--teal);}
+  #sub .who.ea{color:#8fa8ff;}
+
+  #hint{
+    position:absolute;left:50%;bottom:3%;transform:translateX(-50%);
+    font-size:clamp(9px,1.35vh,13px);color:#5d564e;letter-spacing:.18em;
+  }
+
+  /* 心跳红闪 */
+  #pulse{position:absolute;inset:0;pointer-events:none;opacity:0;
+    box-shadow:inset 0 0 14vh 2vh rgba(179,36,31,.85);}
+
+  /* ---------- 全屏面板 ---------- */
+  .panel{
+    position:absolute;inset:0;display:none;
+    flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;pointer-events:auto;
+    background:rgba(0,0,0,.86);
+    padding:clamp(14px,4vh,48px);
+    overflow:auto;               /* 屏幕太矮时可滚动，而不是压扁内容 */
+  }
+  .panel.show{display:flex;}
+  /* 关键：禁止 flex 压扁子元素，否则按钮会被挤成一条细缝点不到 */
+  .panel > *{flex-shrink:0;}
+  #p-title{cursor:pointer;}
+  .panel h1{
+    font-size:clamp(26px,6.4vh,64px);letter-spacing:.3em;font-weight:normal;
+    text-shadow:0 0 22px rgba(179,36,31,.55);
+    margin-bottom:.2em;
+  }
+  .panel h1 em{font-style:normal;color:var(--red);}
+  .panel .sub{font-size:clamp(11px,1.7vh,16px);color:var(--dim);letter-spacing:.34em;margin-bottom:2.6vh}
+  .panel p{font-size:clamp(11px,1.65vh,15px);color:#a89e93;line-height:2;letter-spacing:.08em;max-width:640px}
+  .panel .quote{
+    color:#e6dccf;border-left:2px solid var(--red);padding-left:1em;text-align:left;
+    margin:2vh 0;font-size:clamp(11px,1.7vh,16px);line-height:2;
+  }
+  .btn{
+    pointer-events:auto;cursor:pointer;
+    margin-top:3vh;padding:.85em 2.4em;
+    border:1px solid rgba(216,207,196,.4);
+    background:transparent;color:var(--ink);
+    font-family:inherit;font-size:clamp(11px,1.7vh,15px);letter-spacing:.28em;
+    transition:.18s;
+  }
+  .btn:hover{background:rgba(216,207,196,.12);border-color:var(--ink)}
+  .keys-help{
+    display:grid;grid-template-columns:auto auto;gap:.5em 1.6em;
+    margin-top:2.4vh;font-size:clamp(10px,1.5vh,14px);color:#8b8177;
+    text-align:left;
+  }
+  .keys-help span:first-child{color:var(--teal);letter-spacing:.14em}
+  .fine{font-size:clamp(9px,1.3vh,12px);color:#4e4942;margin-top:3vh;letter-spacing:.16em}
+  .blood{color:var(--red)}
+  .win h1{text-shadow:0 0 22px rgba(79,214,194,.5)}
+  .win h1 em{color:var(--teal)}
+
+  /* 内容预警面板 */
+  #p-warn{background:rgba(0,0,0,.94);}
+  #p-warn .warn-title{
+    color:var(--red);letter-spacing:.3em;
+    font-size:clamp(14px,2.4vh,22px);margin-bottom:2.2vh;
+  }
+  #p-warn .warn-box{
+    border:1px solid rgba(179,36,31,.45);
+    background:rgba(179,36,31,.06);
+    padding:clamp(14px,2.6vh,26px) clamp(16px,3vw,34px);
+    max-width:min(86vw,660px);
+    text-align:left;
+  }
+  #p-warn .warn-box p{
+    font-size:clamp(11px,1.6vh,15px);line-height:2;color:#c9beb2;
+    max-width:none;margin-bottom:.4em;
+  }
+  #p-warn .warn-box p:last-child{margin-bottom:0}
+  #p-warn .warn-box b{color:var(--ink);font-weight:normal}
+  #p-warn .warn-box .blood{font-weight:normal}
+  #p-warn .cn{
+    margin-top:2.4vh;font-size:clamp(11px,1.7vh,16px);
+    color:var(--dim);letter-spacing:.22em;
+  }
+  #p-warn .cn b{color:#a89e93;font-weight:normal}
+  #p-warn .btn{margin-top:2.6vh}
+
+  /* 立绘突脸：全屏铺满 + 压暗，文字压在最上层 */
+  .face-bg{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .face-bg img{
+    width:100%;height:100%;
+    object-fit:cover;object-position:center 74%;
+    image-rendering:pixelated;
+    filter:brightness(.62) contrast(1.06);
+    animation:facein .9s ease-out;
+  }
+  @keyframes facein{
+    from{transform:scale(1.22);filter:brightness(.3) contrast(1.1)}
+    to{transform:scale(1.0);filter:brightness(.62) contrast(1.06)}
+  }
+  /* 文字与立绘之间的暗色层：顶部最暗保证可读，中下部透出脸 */
+  .face-bg::after{
+    content:'';position:absolute;inset:0;
+    background:linear-gradient(to bottom,
+      rgba(0,0,0,.86) 0%, rgba(0,0,0,.72) 26%,
+      rgba(0,0,0,.46) 52%, rgba(0,0,0,.30) 100%);
+  }
+  #p-lose{justify-content:center;padding-top:0}
+  #p-egg{justify-content:flex-end;padding-bottom:6vh}
+  #p-lose>.panel-inner,#p-egg>.panel-inner,#p-fail>.panel-inner{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center}
+  #p-fail{justify-content:center}
+  #egg-name{font-size:clamp(12px,1.8vh,17px);letter-spacing:.24em;margin:.4vh 0}
+  #egg-name.ea{color:#8fa8ff}
+  #egg-name.kv{color:var(--teal)}
+  #egg-line{max-width:620px;font-size:clamp(12px,1.8vh,17px);line-height:2;color:#e6dccf;min-height:2.5em}
+  .egg-hint{font-size:clamp(9px,1.3vh,12px);color:#5d564e;margin-top:1.6vh;letter-spacing:.22em;animation:blink 1.2s steps(2,end) infinite}
+  #egg-ui{display:flex;gap:1.2em;margin-top:2vh}
+  #egg-ui .btn{margin-top:0;min-width:7em}
+
+  /* 出口选择浮层：集齐卡+许可单站在出口时出现 */
+  #stay-choice{
+    position:absolute;inset:0;display:none;z-index:7;
+    align-items:center;justify-content:center;pointer-events:auto;
+    background:rgba(0,0,0,.45);
+  }
+  #stay-choice.show{display:flex;}
+  .stay-box{
+    border:1px solid rgba(79,214,194,.4);
+    background:rgba(0,0,0,.88);
+    padding:clamp(16px,3vh,30px) clamp(20px,3.4vw,40px);
+    text-align:center;max-width:min(86vw,560px);
+  }
+  .stay-box .stay-title{
+    color:var(--teal);letter-spacing:.3em;
+    font-size:clamp(13px,2vh,19px);margin-bottom:1.4vh;
+  }
+  .stay-box p{font-size:clamp(11px,1.6vh,15px);color:#a89e93;line-height:2;max-width:none}
+  .stay-box .btn{margin:.8vh .6em 0}
+  .btn.danger{border-color:rgba(179,36,31,.6);color:#e0a29e}
+  .btn.danger:hover{background:rgba(179,36,31,.16)}
+
+  /* 结局三：三振出局（病历式黑屏） */
+  #p-third{background:rgba(0,0,0,.97)}
+  #p-third .med{
+    text-align:left;max-width:min(88vw,600px);
+    border-left:2px solid rgba(179,36,31,.5);
+    padding-left:1.2em;margin:2.4vh 0;
+    font-size:clamp(11px,1.6vh,15px);line-height:2.1;color:#9a9088;
+  }
+  #p-third .med b{color:#c9beb2;font-weight:normal}
+
+  /* 结局四：自愿留下 */
+  #p-stay{justify-content:center}
+  #p-stay>.panel-inner{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center}
+
+  /* 触屏控件：仅触屏设备显示 */
+  #touch-ui{position:fixed;inset:0;z-index:8;pointer-events:none;display:none}
+  body.touch #touch-ui{display:block}
+  #joy-base{
+    position:fixed;width:34vw;height:34vw;max-width:150px;max-height:150px;
+    border:2px solid rgba(216,207,196,.35);border-radius:50%;
+    background:rgba(0,0,0,.25);display:none;
+  }
+  #joy-knob{
+    position:absolute;left:50%;top:50%;width:40%;height:40%;
+    transform:translate(-50%,-50%);border-radius:50%;
+    background:rgba(216,207,196,.4);
+  }
+  .tbtn{
+    position:fixed;z-index:9;pointer-events:auto;
+    border:1px solid rgba(216,207,196,.4);background:rgba(0,0,0,.42);
+    color:var(--ink);font-family:inherit;letter-spacing:.15em;
+    border-radius:50%;opacity:.85;
+    touch-action:manipulation;
+  }
+  .tbtn.on{background:rgba(79,214,194,.3);border-color:var(--teal)}
+  #tb-use{right:5vw;bottom:22vh;width:21vw;height:21vw;max-width:104px;max-height:104px;font-size:clamp(13px,4vw,18px)}
+  #tb-run{right:28vw;bottom:10vh;width:17vw;height:17vw;max-width:80px;max-height:80px;font-size:clamp(12px,3.4vw,15px)}
+  #tb-crouch{right:6vw;bottom:7vh;width:15vw;height:15vw;max-width:68px;max-height:68px;font-size:clamp(12px,3.4vw,15px)}
+  #tb-pause{right:4vw;top:11vh;width:12vw;height:12vw;max-width:54px;max-height:54px;font-size:clamp(14px,4vw,20px)}
+  .tbtn{-webkit-tap-highlight-color:transparent}
+
+  /* 结局收集徽章（标题界面） */
+  #end-badges{margin-top:2.6vh;font-size:clamp(13px,2vh,19px);letter-spacing:.5em}
+  #end-badges .bdg.on{color:var(--teal);text-shadow:0 0 10px rgba(79,214,194,.6)}
+  #end-badges .bdg.off{color:#332f2a}
+  #end-badges .bdg-label{font-size:clamp(9px,1.3vh,12px);color:#4e4942;letter-spacing:.3em;margin-left:.6em}
+
+  /* 出错时不再静默：把异常直接摆在屏幕上 */
+  #err{
+    position:absolute;left:0;right:0;top:0;display:none;
+    z-index:99;pointer-events:none;
+    background:rgba(120,16,12,.92);color:#ffe9e6;
+    font-size:clamp(10px,1.5vh,14px);line-height:1.6;
+    padding:.7em 1em;text-align:left;letter-spacing:.02em;
+    white-space:pre-wrap;word-break:break-all;
+    max-height:40%;overflow:auto;
+    border-bottom:1px solid #ff9a92;
+  }
+  #err.show{display:block;}
+
+  /* ---------- 被抓瞬间：红闪 ----------
+     只用 opacity 做动画（纯合成层，不触发重排/重绘），所以不会卡顿。
+     色调：褐红（#3B0E09 系）——低明度、低饱和，压在黑暗画面里不刺眼。
+     闪动也不再打到全黑/全亮两个极端，避免频闪伤眼，压迫感靠节奏而非亮度。 */
+  #hit{
+    position:absolute;inset:0;pointer-events:none;z-index:60;
+    opacity:0;
+    background:
+      radial-gradient(circle at 50% 46%,
+        rgba(97,33,25,.86) 0%,
+        rgba(72,22,17,.90) 44%,
+        rgba(59,14,9,.95) 72%,
+        #260705 100%);
+  }
+  #hit.play{animation:hitflash 1.2s cubic-bezier(.16,.9,.3,1) forwards;}
+  @keyframes hitflash{
+    0%   {opacity:0}
+    5%   {opacity:.86}   /* 闷下去的一击 */
+    13%  {opacity:.34}
+    20%  {opacity:.80}
+    30%  {opacity:.30}
+    38%  {opacity:.74}
+    50%  {opacity:.62}
+    68%  {opacity:.5}
+    100% {opacity:0}     /* 化开，露出 CG */
+  }
+  /* 被抓瞬间的可读大字（压在红闪之上，随后一起消失） */
+  #hit .hit-word{
+    position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);
+    font-size:clamp(24px,7vh,64px);letter-spacing:.5em;color:#c9aca4;
+    text-shadow:0 0 18px rgba(38,7,5,.9),0 0 4px #000;
+    white-space:nowrap;
+  }
+
+  /* 彩蛋·活镜子：倒影在渲染器里做真实空间镜像（见 render.js 3.5 节），
+     不再使用 DOM 浮层 —— 镜子就是贴在病房 B 墙上的那一面。 */
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="wrap">
+    <canvas id="screen" width="480" height="300"></canvas>
+    <div id="grain"></div>
+    <div id="vig"></div>
+    <div id="pulse"></div>
+    <div id="err"></div>
+    <!-- 被抓瞬间的红色爆闪层（由 game.js 加 .play 触发） -->
+    <div id="hit"><div class="hit-word">被 抓 住 了</div></div>
+
+    <!-- 触屏控件（仅触屏设备显示） -->
+    <div id="touch-ui">
+      <div id="joy-base"><div id="joy-knob"></div></div>
+      <button class="tbtn" id="tb-use">拾取</button>
+      <button class="tbtn" id="tb-run">跑</button>
+      <button class="tbtn" id="tb-crouch">蹲</button>
+      <button class="tbtn" id="tb-pause">∥</button>
+    </div>
+
+    <div class="layer" id="hud">
+      <div class="top">
+        <div class="card" id="objective">目标：<b>找到 3 张门禁卡，从南侧消防通道离开</b></div>
+        <div class="card" id="keys">门禁卡 <span class="off">◆</span><span class="off">◆</span><span class="off">◆</span></div>
+      </div>
+      <div id="status" class="card" style="position:absolute;left:50%;top:12%;transform:translateX(-50%)">被发现</div>
+      <div id="sub"></div>
+      <div id="hint">WASD 移动 · 鼠标转向 · E 拾取 · SHIFT 疾走 · CTRL 潜行 · ESC 暂停</div>
+    </div>
+
+    <!-- 出口选择：集齐卡+许可单站在出口时出现 -->
+    <div id="stay-choice">
+      <div class="stay-box">
+        <div class="stay-title">消 防 通 道 · 绿 灯</div>
+        <p>门就在眼前。放行的是他的签名——也是你的自由。</p>
+        <button class="btn" id="btn-stay-go">推门离开</button>
+        <button class="btn danger" id="btn-stay-tear">撕掉许可单，留下</button>
+        <div class="fine">E 离开 · Q 留下</div>
+      </div>
+    </div>
+
+    <!-- 内容预警：必须确认后才能进入游戏 -->
+    <div class="panel show" id="p-warn">
+      <div class="warn-title">⚠ 内 容 警 告</div>
+      <div class="warn-box">
+        <p>本作品为【艾尔海森×卡维（知妙）】同人恐怖向游戏，非原神官方内容。作品仅为同人艺术创作，角色设定、剧情为二创，不代表原作官方人物关系。</p>
+        <p>游戏包含：<b>突然惊吓 / 突脸</b>、<b>紧张音效</b>、<b>恐怖画面</b>、<b>心理惊悚情节</b>。</p>
+        <p>胆小、对惊吓画面敏感、未成年人请谨慎游玩或直接退出。</p>
+        <p><span class="blood">本同人作品仅用于爱好者创作，无商业用途。本作品为免费同人，未经作者许可，禁止倒卖、打包售卖、用于任何盈利行为。</span></p>
+      </div>
+      <div class="cn">创作 · <b>玉米</b></div>
+      <button class="btn" id="btn-warn-ok">我已知悉，继续</button>
+    </div>
+
+    <!-- 开始 -->
+    <div class="panel" id="p-title">
+      <h1>夜间<em>查房</em></h1>
+      <div class="sub">NIGHT ROUND</div>
+      <p>凌晨 3:12。你醒了。<br>手腕上还留着约束带的红痕，走廊尽头的灯管在闪。</p>
+      <div class="quote">
+        病历 0709 号 · 卡维<br>
+        主治医师 · 艾尔海森<br>
+        <span class="blood">建议：继续留院观察，禁止外出。</span>
+      </div>
+      <p>他在查房。每一条走廊他都会走到。<br>别让他看见你 —— 也别让他听见你。</p>
+      <button class="btn" id="btn-start">开始逃亡</button>
+      <div class="keys-help">
+        <span>W A S D</span><span>移动</span>
+        <span>鼠标 / ←→</span><span>转身</span>
+        <span>SHIFT</span><span>奔跑（很吵）</span>
+        <span>CTRL</span><span>潜行（很慢，很轻）</span>
+        <span>E</span><span>拾取门禁卡</span>
+        <span>Q</span><span>出口处 · 撕掉许可单留下</span>
+        <span>ESC</span><span>暂停</span>
+      </div>
+      <div class="fine">建议戴上耳机。游戏含突发音效与闪烁画面。</div>
+      <div id="end-badges"></div>
+    </div>
+
+    <!-- 暂停 -->
+    <div class="panel" id="p-pause">
+      <h1 style="letter-spacing:.2em">暂 停</h1>
+      <div class="sub">PAUSED</div>
+      <p id="pause-tip">他还在走廊里等你。</p>
+      <button class="btn" id="btn-resume">继续</button>
+      <button class="btn" id="btn-restart2">重新开始</button>
+    </div>
+
+    <!-- 失败 -->
+    <div class="panel" id="p-lose">
+      <div class="face-bg"><img id="lose-img" alt=""></div>
+      <div class="panel-inner">
+        <h1>被 发 现</h1>
+        <div class="sub">CAUGHT</div>
+        <div class="quote" id="lose-line"></div>
+        <p id="lose-p">你被按回病床上。约束带重新系紧，比上一次更牢。</p>
+        <button class="btn" id="btn-retry">再试一次</button>
+        <div class="fine" id="lose-stat"></div>
+      </div>
+    </div>
+
+    <!-- 胜利 -->
+    <div class="panel win" id="p-win">
+      <h1>逃 <em>出</em> 去 了</h1>
+      <div class="sub">ESCAPED</div>
+      <div class="quote" id="win-line"></div>
+      <p id="win-p">凌晨的风灌进喉咙。你回头看了一眼那栋楼。</p>
+      <button class="btn" id="btn-again">再来一次</button>
+      <button class="btn" id="btn-egg">几天后 ……</button>
+      <div class="fine" id="win-stat"></div>
+    </div>
+
+    <!-- 彩蛋：几天后 -->
+    <div class="panel" id="p-egg">
+      <div class="face-bg"><img id="egg-img" alt=""></div>
+      <div class="panel-inner">
+        <div id="egg-name"></div>
+        <div id="egg-line"></div>
+        <div id="egg-ui">
+          <button class="btn" id="egg-b1" style="display:none"></button>
+          <button class="btn" id="egg-b2" style="display:none"></button>
+        </div>
+        <div class="egg-hint" id="egg-hint">点击继续 ▼</div>
+        <button class="btn" id="btn-egg-again" style="display:none">再来一次</button>
+      </div>
+    </div>
+
+    <!-- 结局三：三振出局 -->
+    <div class="panel" id="p-third">
+      <h1>特 殊 病 房</h1>
+      <div class="sub">ENDING 3</div>
+      <div class="med">
+        病历 0709 号 · 补记<br>
+        出逃未遂：<b>三次</b>。<br>
+        处置：约束带更换为四点式。转入 L 区特殊病房。<br>
+        探视：无。窗户：封。门：从外面锁。
+      </div>
+      <div class="quote">
+        「这下，你哪儿也去不了了。」<br>
+        「别用那种眼神看我。我只是——<span class="blood">把你收得更近一点</span>而已。」
+      </div>
+      <button class="btn" id="btn-third-retry">再来一次</button>
+      <div class="fine" id="third-stat"></div>
+    </div>
+
+    <!-- 结局四：自愿留下 -->
+    <div class="panel" id="p-stay">
+      <div class="face-bg"><img id="stay-img" src="images/IMG_4264.PNG" alt=""></div>
+      <div class="panel-inner">
+        <h1>留 下 来 了</h1>
+        <div class="sub">ENDING 4</div>
+        <div class="quote">
+          「许可是你自己撕的。我一个字都没有逼你。」<br>
+          他把碎片一片一片捡起来，动作轻得像在收拾一件医疗器械。<br>
+          「症状好转。依赖度：完全。」他在病历上落笔，<br>
+          「今晚加餐，想吃什么自己挑。——<span class="blood">真乖。</span>」
+        </div>
+        <p id="stay-p">你发现自己在笑。原来被夸奖是这样的。<br>
+        原来你逃了一整晚，想要的只是这个。</p>
+        <button class="btn" id="btn-stay-retry">再来一次</button>
+        <div class="fine" id="stay-stat"></div>
+      </div>
+    </div>
+
+    <!-- 结局一：逃跑失败 -->
+    <div class="panel" id="p-fail">
+      <div class="face-bg"><img id="fail-img" src="images/结局一.PNG" alt=""></div>
+      <div class="panel-inner">
+        <h1>逃 亡 失 败</h1>
+        <div class="sub">ENDING 1</div>
+        <div class="quote">红灯。「未查检出·院·许·可——已通知主治医师。」</div>
+        <p id="fail-p">身后，脚步声不疾不徐地穿过走廊。你转身——他已经站在那里了。<br>
+        「许可单呢？」他俯身，替你拂掉肩上的灰。<span class="blood">「没有我的签字，你哪里也去不了。」</span></p>
+        <button class="btn" id="btn-fail-egg">几天后 ……</button>
+        <button class="btn" id="btn-fail-retry">再来一次</button>
+        <div class="fine" id="fail-stat"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 启动自检：脚本报错或没加载上时直接显示在屏幕上，不再"点了没反应" */
+(function () {
+  var box = document.getElementById('err');
+  function show(msg) {
+    box.textContent = '⚠ ' + msg;
+    box.classList.add('show');
+  }
+  window.addEventListener('error', function (e) {
+    var t = e.target;
+    if (t && t.tagName === 'SCRIPT') {
+      show('脚本加载失败：' + (t.src || '(inline)'));
+    } else {
+      var stack = (e.error && e.error.stack) ? String(e.error.stack).split('\n').slice(0, 3).join('\n') : '';
+      show('运行错误：' + (e.message || e) +
+        (e.filename ? '\n' + e.filename + ' : ' + e.lineno : '') +
+        (stack ? '\n' + stack : ''));
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    show('未处理的异步异常：' + ((r && r.message) || r));
+  });
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      if (!window.__GAME) {
+        show('游戏脚本没有初始化成功（window.__GAME 缺失）。\n' +
+             '请按 F12 打开 Console 看看具体报错。');
+      }
+    }, 400);
+  });
+})();
+</script>
+<script src="js/audio.js?v=20260929o"></script>
+<script src="js/world.js?v=20260929o"></script>
+<script src="js/sprites.js?v=20260929o"></script>
+<script src="js/render.js?v=20260929o"></script>
+<script src="js/ai.js?v=20260929o"></script>
+<script src="js/game.js?v=20260929o"></script>
+</body>
+</html>
